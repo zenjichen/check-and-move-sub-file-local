@@ -18,6 +18,19 @@ except ImportError:
     subprocess.check_call([sys.executable, "-m", "pip", "install", "customtkinter"])
     import customtkinter as ctk
 
+try:
+    from tkinterdnd2 import TkinterDnD, DND_FILES
+    HAS_DND = True
+except ImportError:
+    import subprocess
+    import sys
+    subprocess.check_call([sys.executable, "-m", "pip", "install", "tkinterdnd2"])
+    try:
+        from tkinterdnd2 import TkinterDnD, DND_FILES
+        HAS_DND = True
+    except ImportError:
+        HAS_DND = False
+
 from tkinter import filedialog, messagebox
 
 # ──────────────────────────────────────────────
@@ -88,9 +101,11 @@ class ScrollableCheckboxFrame(ctk.CTkScrollableFrame):
         return [path for var, path in self.checkbox_vars if var.get()]
 
 
-class App(ctk.CTk):
+class App(ctk.CTk, TkinterDnD.DnDWrapper if HAS_DND else object):
     def __init__(self):
         super().__init__()
+        if HAS_DND:
+            self.TkdndVersion = TkinterDnD._require(self)
 
         # ── Window Setup ──
         self.title("📂 Check & Drop SubFile")
@@ -166,13 +181,43 @@ class App(ctk.CTk):
     def _build_source_section(self, parent):
         card = self._card(parent, "📁  Chọn Folder Mẹ (Source)")
 
-        row = ctk.CTkFrame(card, fg_color="transparent")
-        row.pack(fill="x", padx=12, pady=(0, 12))
+        # Drop zone hint
+        drop_hint = ctk.CTkLabel(
+            card,
+            text="📥 Kéo thả folder từ máy tính vào ô bên dưới",
+            font=ctk.CTkFont(size=11),
+            text_color=COLORS["text_muted"],
+        )
+        drop_hint.pack(anchor="w", padx=16, pady=(0, 4))
+
+        # Drop zone frame with visual feedback
+        self.source_drop_frame = ctk.CTkFrame(
+            card,
+            fg_color=COLORS["bg_input"],
+            corner_radius=10,
+            border_color=COLORS["border"],
+            border_width=2,
+        )
+        self.source_drop_frame.pack(fill="x", padx=12, pady=(0, 8))
+
+        drop_inner = ctk.CTkFrame(self.source_drop_frame, fg_color="transparent")
+        drop_inner.pack(fill="x", padx=8, pady=8)
+
+        self.source_drop_icon = ctk.CTkLabel(
+            drop_inner,
+            text="⬇️  Kéo folder vào đây  ⬇️",
+            font=ctk.CTkFont(size=12),
+            text_color=COLORS["text_muted"],
+        )
+        self.source_drop_icon.pack(pady=(2, 4))
+
+        row = ctk.CTkFrame(drop_inner, fg_color="transparent")
+        row.pack(fill="x")
 
         self.source_entry = ctk.CTkEntry(
             row,
             textvariable=self.source_path,
-            placeholder_text="Chọn đường dẫn folder mẹ...",
+            placeholder_text="Chọn hoặc kéo thả folder mẹ...",
             font=ctk.CTkFont(size=13),
             fg_color=COLORS["bg_input"],
             border_color=COLORS["border"],
@@ -208,6 +253,10 @@ class App(ctk.CTk):
             command=self._scan_subfolders,
         )
         scan_btn.pack(side="left")
+
+        # Register drag-and-drop
+        if HAS_DND:
+            self._register_drop_target(self.source_drop_frame, self.source_path, self.source_drop_frame, "source")
 
     def _build_subfolder_section(self, parent):
         card = self._card(parent, "📋  Danh sách Folder Con")
@@ -370,15 +419,35 @@ class App(ctk.CTk):
 
         info = ctk.CTkLabel(
             card,
-            text="Mặc định: cùng folder mẹ.\nHoặc chọn thư mục khác:",
+            text="Mặc định: cùng folder mẹ.\nHoặc chọn thư mục khác (kéo thả hoặc browse):",
             font=ctk.CTkFont(size=11),
             text_color=COLORS["text_muted"],
             justify="left",
         )
         info.pack(anchor="w", padx=16, pady=(0, 6))
 
-        row = ctk.CTkFrame(card, fg_color="transparent")
-        row.pack(fill="x", padx=12, pady=(0, 12))
+        self.dest_drop_frame = ctk.CTkFrame(
+            card,
+            fg_color=COLORS["bg_input"],
+            corner_radius=10,
+            border_color=COLORS["border"],
+            border_width=2,
+        )
+        self.dest_drop_frame.pack(fill="x", padx=12, pady=(0, 12))
+
+        drop_inner = ctk.CTkFrame(self.dest_drop_frame, fg_color="transparent")
+        drop_inner.pack(fill="x", padx=8, pady=8)
+
+        self.dest_drop_icon = ctk.CTkLabel(
+            drop_inner,
+            text="⬇️ Kéo folder đích vào đây",
+            font=ctk.CTkFont(size=11),
+            text_color=COLORS["text_muted"],
+        )
+        self.dest_drop_icon.pack(pady=(2, 4))
+
+        row = ctk.CTkFrame(drop_inner, fg_color="transparent")
+        row.pack(fill="x")
 
         self.dest_entry = ctk.CTkEntry(
             row,
@@ -405,6 +474,10 @@ class App(ctk.CTk):
             command=self._browse_dest,
         )
         dest_btn.pack(side="left")
+
+        # Register drag-and-drop
+        if HAS_DND:
+            self._register_drop_target(self.dest_drop_frame, self.dest_path, self.dest_drop_frame, "dest")
 
     def _build_action_section(self, parent):
         btn_row = ctk.CTkFrame(parent, fg_color="transparent")
@@ -507,6 +580,83 @@ class App(ctk.CTk):
         self.log_box.insert("end", f"[{timestamp}] {prefix} {msg}\n")
         self.log_box.see("end")
         self.log_box.configure(state="disabled")
+
+    # ════════════════════════════════════════════
+    # Drag & Drop
+    # ════════════════════════════════════════════
+    def _register_drop_target(self, widget, string_var, drop_frame, target_name):
+        """Register a widget as a drag-and-drop target for folders."""
+        inner_tk = widget.winfo_children()[0] if widget.winfo_children() else widget
+        # We register on the underlying tk widget
+        drop_frame.drop_target_register(DND_FILES)
+        drop_frame.dnd_bind('<<DropEnter>>', lambda e: self._on_drag_enter(drop_frame, target_name))
+        drop_frame.dnd_bind('<<DropLeave>>', lambda e: self._on_drag_leave(drop_frame, target_name))
+        drop_frame.dnd_bind('<<Drop>>', lambda e: self._on_drop(e, string_var, drop_frame, target_name))
+
+    def _on_drag_enter(self, drop_frame, target_name):
+        """Visual feedback when dragging over a drop zone."""
+        drop_frame.configure(
+            border_color=COLORS["accent_light"],
+            fg_color="#1e1e40",
+        )
+        icon = self.source_drop_icon if target_name == "source" else self.dest_drop_icon
+        icon.configure(
+            text="✨ Thả folder vào đây! ✨",
+            text_color=COLORS["accent_light"],
+        )
+
+    def _on_drag_leave(self, drop_frame, target_name):
+        """Reset visual feedback when drag leaves."""
+        drop_frame.configure(
+            border_color=COLORS["border"],
+            fg_color=COLORS["bg_input"],
+        )
+        if target_name == "source":
+            self.source_drop_icon.configure(
+                text="⬇️  Kéo folder vào đây  ⬇️",
+                text_color=COLORS["text_muted"],
+            )
+        else:
+            self.dest_drop_icon.configure(
+                text="⬇️ Kéo folder đích vào đây",
+                text_color=COLORS["text_muted"],
+            )
+
+    def _on_drop(self, event, string_var, drop_frame, target_name):
+        """Handle dropped files/folders."""
+        # Reset visual
+        self._on_drag_leave(drop_frame, target_name)
+
+        # Parse the dropped data (may contain multiple items in braces)
+        data = event.data
+        # tkdnd wraps paths with spaces in curly braces: {C:/path with spaces}
+        if data.startswith('{'):
+            path = data.strip('{}').split('}')[0]
+        else:
+            path = data.split()[0] if ' ' in data else data
+
+        path = path.strip()
+
+        # Normalize path separators
+        path = os.path.normpath(path)
+
+        if os.path.isdir(path):
+            string_var.set(path)
+            label = "folder mẹ" if target_name == "source" else "folder đích"
+            self._log(f"📥 Đã kéo thả {label}: {path}", "success")
+            # Auto-scan if source
+            if target_name == "source":
+                self.after(100, self._scan_subfolders)
+        elif os.path.isfile(path):
+            # If user drops a file, use its parent directory
+            parent = os.path.dirname(path)
+            string_var.set(parent)
+            label = "folder mẹ" if target_name == "source" else "folder đích"
+            self._log(f"📥 Đã kéo thả file → sử dụng {label}: {parent}", "success")
+            if target_name == "source":
+                self.after(100, self._scan_subfolders)
+        else:
+            self._log(f"⚠️ Đường dẫn không hợp lệ: {path}", "warn")
 
     # ════════════════════════════════════════════
     # Browse Dialogs
